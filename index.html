@@ -4,14 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PDF 智慧浮水印工具</title>
-    <!-- 引入 Tailwind CSS -->
+    <!-- 引入核心工具庫 -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- 引入 React, ReactDOM 與 Babel -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- 引入 Lucide 圖示庫 -->
     <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- PDF 處理核心庫 -->
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
         body { font-family: 'Noto Sans TC', sans-serif; }
@@ -23,6 +24,8 @@
             background: #4f46e5;
             cursor: pointer;
             border-radius: 50%;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
         }
     </style>
 </head>
@@ -30,9 +33,11 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useCallback } = React;
+        const { useState, useEffect, useCallback, useRef } = React;
 
-        // 定義滑桿組件
+        // 設定 pdf.js Worker
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
         const Slider = ({ label, value, unit, min, max, step, current, onChange }) => (
             <div className="space-y-1">
                 <div className="flex justify-between text-[10px] font-black text-slate-400 uppercase">
@@ -42,54 +47,58 @@
                 <input 
                     type="range" min={min} max={max} step={step} value={current} 
                     onChange={(e) => onChange(parseFloat(e.target.value))}
-                    className="w-full h-1 bg-slate-100 rounded-full appearance-none cursor-pointer accent-indigo-600"
+                    className="w-full h-1.5 bg-slate-200 rounded-full appearance-none cursor-pointer accent-indigo-600"
                 />
             </div>
         );
 
         const App = () => {
+            // 記憶設定讀取邏輯
+            const getInitial = (key, defaultValue) => {
+                try {
+                    const saved = localStorage.getItem('pdf_wm_v3_' + key);
+                    if (saved === null) return defaultValue;
+                    return JSON.parse(saved);
+                } catch (e) {
+                    return defaultValue;
+                }
+            };
+
             const [pdfFile, setPdfFile] = useState(null);
             const [isProcessing, setIsProcessing] = useState(false);
-            const [libsReady, setLibsReady] = useState({ pdfLib: false, pdfJs: false });
             const [errorMessage, setErrorMessage] = useState('');
             const [pdfPreviewUrl, setPdfPreviewUrl] = useState('https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1200&q=80');
             const [isRendering, setIsRendering] = useState(false);
 
-            const [watermarkType, setWatermarkType] = useState('text'); 
-            const [watermarkText, setWatermarkText] = useState('內部文件，請勿外流');
-            const [watermarkImage, setWatermarkImage] = useState(null); 
-            const [watermarkImagePreview, setWatermarkImagePreview] = useState(null); 
-            
-            const [opacity, setOpacity] = useState(0.3);
-            const [rotation, setRotation] = useState(-45);
-            const [scale, setScale] = useState(1);
-            const [layout, setLayout] = useState('tiled'); 
-            const [density, setDensity] = useState(4); 
+            // 參數設定 (支援 localStorage)
+            const [watermarkType, setWatermarkType] = useState(getInitial('type', 'text')); 
+            const [watermarkText, setWatermarkText] = useState(getInitial('text', '內部文件，請勿外流'));
+            const [outputFileName, setOutputFileName] = useState(getInitial('fileName', '已壓印檔案'));
+            const [opacity, setOpacity] = useState(getInitial('opacity', 0.3));
+            const [rotation, setRotation] = useState(getInitial('rotation', -45));
+            const [scale, setScale] = useState(getInitial('scale', 1));
+            const [layout, setLayout] = useState(getInitial('layout', 'tiled')); 
+            const [density, setDensity] = useState(getInitial('density', 4)); 
 
+            const [watermarkImage, setWatermarkImage] = useState(null);
+            const [watermarkImagePreview, setWatermarkImagePreview] = useState(null);
+
+            // 當設定改變時保存至 localStorage
             useEffect(() => {
-                const loadScripts = async () => {
-                    const load = (src) => new Promise((res) => {
-                        const s = document.createElement('script');
-                        s.src = src;
-                        s.onload = res;
-                        document.head.appendChild(s);
-                    });
+                const config = { type: watermarkType, text: watermarkText, fileName: outputFileName, opacity, rotation, scale, layout, density };
+                Object.keys(config).forEach(key => {
+                    localStorage.setItem('pdf_wm_v3_' + key, JSON.stringify(config[key]));
+                });
+            }, [watermarkType, watermarkText, outputFileName, opacity, rotation, scale, layout, density]);
 
-                    try {
-                        await load('https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js');
-                        await load('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
-                        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-                        setLibsReady({ pdfLib: true, pdfJs: true });
-                        lucide.createIcons();
-                    } catch (e) {
-                        setErrorMessage('核心元件載入失敗。');
-                    }
-                };
-                loadScripts();
+            // 初始化 Lucide 圖示
+            useEffect(() => {
+                if (window.lucide) window.lucide.createIcons();
             }, []);
 
+            // PDF 預覽渲染
             useEffect(() => {
-                if (!pdfFile || !libsReady.pdfJs) return;
+                if (!pdfFile) return;
                 setIsRendering(true);
                 const render = async () => {
                     try {
@@ -103,11 +112,14 @@
                         canvas.width = viewport.width;
                         await page.render({ canvasContext: context, viewport }).promise;
                         setPdfPreviewUrl(canvas.toDataURL());
-                    } catch (err) { setErrorMessage('預覽生成失敗。'); }
-                    finally { setIsRendering(false); }
+                    } catch (err) { 
+                        setErrorMessage('PDF 預覽生成失敗。'); 
+                    } finally { 
+                        setIsRendering(false); 
+                    }
                 };
                 render();
-            }, [pdfFile, libsReady.pdfJs]);
+            }, [pdfFile]);
 
             const textToImageBuffer = (text, s) => {
                 const canvas = document.createElement('canvas');
@@ -126,101 +138,155 @@
             };
 
             const generatePdf = async () => {
-                if (!pdfFile || !libsReady.pdfLib) return;
+                if (!pdfFile) return;
                 setIsProcessing(true);
+                setErrorMessage('');
                 try {
                     const { PDFDocument, degrees } = window.PDFLib;
                     const pdfDoc = await PDFDocument.load(await pdfFile.arrayBuffer());
                     const pages = pdfDoc.getPages();
-                    let embedImg = watermarkType === 'text' 
-                        ? await pdfDoc.embedPng(textToImageBuffer(watermarkText, 2))
-                        : await (async () => {
-                            try { return await pdfDoc.embedJpg(watermarkImage); }
-                            catch { return await pdfDoc.embedPng(watermarkImage); }
-                        })();
+                    let embedImg;
+                    
+                    if (watermarkType === 'text') {
+                        embedImg = await pdfDoc.embedPng(textToImageBuffer(watermarkText, 2));
+                    } else {
+                        try { embedImg = await pdfDoc.embedJpg(watermarkImage); }
+                        catch { embedImg = await pdfDoc.embedPng(watermarkImage); }
+                    }
 
                     pages.forEach(page => {
                         const { width, height } = page.getSize();
                         const dims = embedImg.scale(0.3 * scale);
-                        const draw = (x, y) => page.drawImage(embedImg, { x: x - dims.width / 2, y: y - dims.height / 2, width: dims.width, height: dims.height, opacity, rotate: degrees(rotation) });
-                        if (layout === 'center') draw(width / 2, height / 2);
-                        else {
+                        const draw = (x, y) => page.drawImage(embedImg, { 
+                            x: x - dims.width / 2, 
+                            y: y - dims.height / 2, 
+                            width: dims.width, 
+                            height: dims.height, 
+                            opacity, 
+                            rotate: degrees(rotation) 
+                        });
+                        
+                        if (layout === 'center') {
+                            draw(width / 2, height / 2);
+                        } else {
                             const cols = density + 1, rows = density + 2;
                             const gapX = width / cols, gapY = height / rows;
-                            for (let i = 1; i <= cols; i++) for (let j = 1; j <= rows; j++) draw(i * gapX - gapX/2, j * gapY - gapY/2);
+                            for (let i = 1; i <= cols; i++) {
+                                for (let j = 1; j <= rows; j++) {
+                                    draw(i * gapX - gapX/2, j * gapY - gapY/2);
+                                }
+                            }
                         }
                     });
+
+                    const pdfBytes = await pdfDoc.save();
+                    const finalName = outputFileName.endsWith('.pdf') ? outputFileName : `${outputFileName}.pdf`;
+                    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+                    const url = URL.createObjectURL(blob);
                     const link = document.createElement('a');
-                    link.href = URL.createObjectURL(new Blob([await pdfDoc.save()], { type: 'application/pdf' }));
-                    link.download = `Watermarked_${pdfFile.name}`;
+                    link.href = url;
+                    link.download = finalName;
+                    document.body.appendChild(link);
                     link.click();
-                } catch (err) { setErrorMessage('導出失敗。'); }
-                finally { setIsProcessing(false); }
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(url);
+                } catch (err) { 
+                    setErrorMessage('導出失敗，請確認檔案。'); 
+                } finally { 
+                    setIsProcessing(false); 
+                }
             };
 
             return (
-                <div className="min-h-screen flex flex-col">
+                <div className="min-h-screen flex flex-col bg-slate-50">
                     <header className="bg-white border-b p-6 shadow-sm z-30">
                         <div className="max-w-7xl mx-auto space-y-6">
                             <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-3">
-                                    <div className="bg-indigo-600 p-2 rounded-lg text-white"><i data-lucide="layers"></i></div>
-                                    <h1 className="text-xl font-black text-slate-900">PDF 浮水印助手</h1>
+                                    <div className="bg-indigo-600 p-2 rounded-lg text-white">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                                    </div>
+                                    <h1 className="text-xl font-black text-slate-900 tracking-tight">PDF 智慧浮水印助手</h1>
                                 </div>
-                                <button disabled={!pdfFile || isProcessing || !libsReady.pdfLib} onClick={generatePdf} className={`px-8 py-3 rounded-full font-black text-white shadow-lg flex items-center gap-2 ${!pdfFile || isProcessing ? 'bg-slate-300' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
-                                    {isProcessing ? <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div> : <i data-lucide="download"></i>}
-                                    {isProcessing ? "處理中" : "導出成品 PDF"}
+                                <button 
+                                    disabled={!pdfFile || isProcessing} 
+                                    onClick={generatePdf} 
+                                    className={`px-8 py-3 rounded-full font-black text-white shadow-lg flex items-center gap-2 transition-all active:scale-95 ${!pdfFile || isProcessing ? 'bg-slate-300' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+                                >
+                                    {isProcessing ? <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div> : <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>}
+                                    {isProcessing ? "處理中..." : "生成並下載 PDF"}
                                 </button>
                             </div>
+                            
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                                 <div className="space-y-4">
                                     <h2 className="text-[10px] font-black uppercase text-slate-400">1. 內容設定</h2>
-                                    <label className="block cursor-pointer border-2 border-dashed rounded-xl p-3 text-center border-slate-200">
-                                        <p className="text-xs font-bold text-slate-600 truncate">{pdfFile ? pdfFile.name : "上傳 PDF"}</p>
+                                    <label className="block cursor-pointer border-2 border-dashed rounded-xl p-3 text-center border-slate-200 hover:border-indigo-400 transition-colors">
+                                        <p className="text-xs font-bold text-slate-600 truncate">{pdfFile ? pdfFile.name : "點擊上傳 PDF"}</p>
                                         <input type="file" accept=".pdf" className="hidden" onChange={(e) => setPdfFile(e.target.files[0])} />
                                     </label>
                                     <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-bold">
-                                        <button onClick={() => setWatermarkType('text')} className={`flex-1 py-1 ${watermarkType === 'text' ? 'bg-white shadow text-indigo-600' : 'text-slate-500'} rounded-lg`}>文字</button>
-                                        <button onClick={() => setWatermarkType('image')} className={`flex-1 py-1 ${watermarkType === 'image' ? 'bg-white shadow text-indigo-600' : 'text-slate-500'} rounded-lg`}>圖片</button>
+                                        <button onClick={() => setWatermarkType('text')} className={`flex-1 py-1 ${watermarkType === 'text' ? 'bg-white shadow text-indigo-600' : 'text-slate-500'} rounded-lg transition-all`}>文字模式</button>
+                                        <button onClick={() => setWatermarkType('image')} className={`flex-1 py-1 ${watermarkType === 'image' ? 'bg-white shadow text-indigo-600' : 'text-slate-500'} rounded-lg transition-all`}>圖片模式</button>
                                     </div>
-                                    {watermarkType === 'text' ? <input type="text" value={watermarkText} onChange={(e) => setWatermarkText(e.target.value)} className="w-full px-4 py-2 bg-slate-50 border rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500" /> : <input type="file" accept="image/*" onChange={(e) => { const f = e.target.files[0]; if(f){ const r = new FileReader(); r.onload=(ev)=>{setWatermarkImage(ev.target.result); setWatermarkImagePreview(URL.createObjectURL(new Blob([ev.target.result])));}; r.readAsArrayBuffer(f); }}} className="text-[10px]" />}
+                                    {watermarkType === 'text' ? 
+                                        <input type="text" value={watermarkText} onChange={(e) => setWatermarkText(e.target.value)} className="w-full px-4 py-2 bg-slate-50 border rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500" /> : 
+                                        <input type="file" accept="image/*" onChange={(e) => { const f = e.target.files[0]; if(f){ const r = new FileReader(); r.onload=(ev)=>{setWatermarkImage(ev.target.result); setWatermarkImagePreview(URL.createObjectURL(new Blob([ev.target.result])));}; r.readAsArrayBuffer(f); }}} className="text-[10px]" />
+                                    }
+                                    <div>
+                                        <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">導出檔名</label>
+                                        <input type="text" value={outputFileName} onChange={(e) => setOutputFileName(e.target.value)} className="w-full px-4 py-2 bg-slate-50 border rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500" />
+                                    </div>
                                 </div>
+                                
                                 <div className="space-y-4">
                                     <h2 className="text-[10px] font-black uppercase text-slate-400">2. 樣式調整</h2>
                                     <Slider label="不透明度" value={Math.round(opacity * 100)} unit="%" min="0" max="1" step="0.05" current={opacity} onChange={setOpacity} />
                                     <Slider label="旋轉角度" value={rotation} unit="°" min="-180" max="180" step="1" current={rotation} onChange={setRotation} />
                                     <Slider label="縮放大小" value={scale.toFixed(1)} unit="x" min="0.3" max="3" step="0.1" current={scale} onChange={setScale} />
                                 </div>
+
                                 <div className="space-y-4">
                                     <h2 className="text-[10px] font-black uppercase text-slate-400">3. 佈局控制</h2>
                                     <div className="grid grid-cols-2 gap-2">
-                                        <button onClick={() => setLayout('center')} className={`py-2 border rounded-xl flex flex-col items-center ${layout === 'center' ? 'border-indigo-600 bg-indigo-50 text-indigo-600' : 'border-slate-200 text-slate-400'}`}><span className="text-[10px] font-bold">置中</span></button>
-                                        <button onClick={() => setLayout('tiled')} className={`py-2 border rounded-xl flex flex-col items-center ${layout === 'tiled' ? 'border-indigo-600 bg-indigo-50 text-indigo-600' : 'border-slate-200 text-slate-400'}`}><span className="text-[10px] font-bold">滿版</span></button>
+                                        <button onClick={() => setLayout('center')} className={`py-2 border rounded-xl flex flex-col items-center ${layout === 'center' ? 'border-indigo-600 bg-indigo-50 text-indigo-600' : 'border-slate-200 text-slate-400'}`}>置中</button>
+                                        <button onClick={() => setLayout('tiled')} className={`py-2 border rounded-xl flex flex-col items-center ${layout === 'tiled' ? 'border-indigo-600 bg-indigo-50 text-indigo-600' : 'border-slate-200 text-slate-400'}`}>滿版</button>
                                     </div>
                                     {layout === 'tiled' && <Slider label="排列密度" value={density} unit="級" min="1" max="8" step="1" current={density} onChange={setDensity} />}
                                 </div>
                             </div>
                         </div>
                     </header>
-                    <main className="flex-1 p-6 flex flex-col">
-                        <div className="mb-4 text-xs font-black text-slate-500 flex justify-between">
-                            <span>即時預覽 (第 1 頁)</span>
-                            {errorMessage && <span className="text-red-500">{errorMessage}</span>}
+
+                    <main className="flex-1 p-6 flex flex-col min-h-0 overflow-y-auto">
+                        <div className="mb-4 text-xs font-black text-slate-500 flex justify-between px-2">
+                            <span className="flex items-center gap-2">即時預覽 (第 1 頁)</span>
+                            {errorMessage && <span className="text-red-500 font-bold">{errorMessage}</span>}
                         </div>
                         <div className="flex-1 bg-slate-200 rounded-[2rem] border-2 border-slate-300 border-dashed flex items-center justify-center p-4 relative overflow-hidden shadow-inner">
-                            <div className="relative max-h-full max-w-full bg-white shadow-2xl overflow-hidden rounded-sm transition-transform hover:scale-[1.01]">
+                            <div className="relative max-h-full max-w-full bg-white shadow-2xl overflow-hidden rounded-sm transition-transform">
                                 <img src={pdfPreviewUrl} className={`max-h-[55vh] w-auto block ${isRendering ? 'opacity-30' : 'opacity-100'}`} alt="preview" />
-                                <div className={`absolute inset-0 z-20 overflow-hidden ${layout === 'center' ? 'flex items-center justify-center' : 'grid'}`} style={layout === 'tiled' ? { gridTemplateColumns: `repeat(${density + 1}, 1fr)`, gridTemplateRows: `repeat(${density + 2}, 1fr)`, padding: '1rem' } : {}}>
-                                    {layout === 'center' ? <div style={{ opacity, transform: `rotate(${rotation}deg) scale(${scale})`, whiteSpace: 'nowrap' }}>{watermarkType === 'text' ? <span className="text-xl font-black text-[#555]">{watermarkText}</span> : watermarkImagePreview && <img src={watermarkImagePreview} className="w-24 h-auto" />}</div> : Array.from({ length: (density + 1) * (density + 2) }).map((_, i) => <div key={i} className="flex items-center justify-center overflow-hidden"><div style={{ opacity, transform: `rotate(${rotation}deg) scale(${scale})`, whiteSpace: 'nowrap' }}>{watermarkType === 'text' ? <span className="text-lg font-black text-[#555]">{watermarkText}</span> : watermarkImagePreview && <img src={watermarkImagePreview} className="w-20 h-auto" />}</div></div>)}
+                                <div className={`absolute inset-0 z-20 overflow-hidden ${layout === 'center' ? 'flex items-center justify-center' : 'grid'}`} 
+                                     style={layout === 'tiled' ? { gridTemplateColumns: `repeat(${density + 1}, 1fr)`, gridTemplateRows: `repeat(${density + 2}, 1fr)`, padding: '1rem' } : {}}>
+                                    {layout === 'center' ? 
+                                        <div style={{ opacity, transform: `rotate(${rotation}deg) scale(${scale})`, whiteSpace: 'nowrap' }}>
+                                            {watermarkType === 'text' ? <span className="text-xl font-black text-[#555]">{watermarkText}</span> : watermarkImagePreview && <img src={watermarkImagePreview} className="w-24 h-auto" />}
+                                        </div> : 
+                                        Array.from({ length: (density + 1) * (density + 2) }).map((_, i) => (
+                                            <div key={i} className="flex items-center justify-center overflow-hidden">
+                                                <div style={{ opacity, transform: `rotate(${rotation}deg) scale(${scale})`, whiteSpace: 'nowrap' }}>
+                                                    {watermarkType === 'text' ? <span className="text-lg font-black text-[#555]">{watermarkText}</span> : watermarkImagePreview && <img src={watermarkImagePreview} className="w-20 h-auto" />}
+                                                </div>
+                                            </div>
+                                        ))
+                                    }
                                 </div>
                             </div>
-                            {!pdfFile && <div className="absolute top-10 bg-white shadow-xl px-6 py-2 rounded-full font-bold text-xs text-indigo-600 animate-bounce">範例模式：請上傳 PDF</div>}
+                            {!pdfFile && <div className="absolute top-10 bg-white shadow-xl px-6 py-2 rounded-full font-bold text-xs text-indigo-600 animate-bounce">請上傳 PDF 開始預覽</div>}
                         </div>
                     </main>
                     <footer className="bg-white border-t py-4 text-center">
-                        <p className="text-slate-400 text-xs font-bold tracking-widest uppercase">
-                            本工具為 海悅AlanZ 所屬
-                        </p>
+                        <p className="text-slate-400 text-[10px] font-bold tracking-widest uppercase">本工具為 海悅AlanZ 所屬</p>
                     </footer>
                 </div>
             );
@@ -228,7 +294,6 @@
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
-        setTimeout(() => lucide.createIcons(), 500);
     </script>
 </body>
 </html>
